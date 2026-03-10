@@ -55,6 +55,32 @@ sharp predict -i /path/to/input/images -o /path/to/output/gaussians -c sharp_257
 
 The results will be 3D gaussian splats (3DGS) in the output folder. The 3DGS `.ply` files are compatible to various public 3DGS renderers. We follow the OpenCV coordinate convention (x right, y down, z forward). The 3DGS scene center is roughly at (0, 0, +z). When dealing with 3rdparty renderers, please scale and rotate to re-center the scene accordingly.
 
+### FAQ: camera alignment and external camera tracks
+
+- **Can I convert Alembic camera data to extrinsics/intrinsics and export a `.ply` aligned to that camera?**
+  - Yes. Use `tools/convert_alembic_camera_to_sharp.py` to:
+    1. read an Alembic camera sample,
+    2. convert camera parameters to OpenCV/SHARP intrinsics (x right, y down, z forward), and
+    3. transform Gaussian means/orientations into your target world frame before writing a new `.ply`.
+  - Example:
+
+```bash
+python tools/convert_alembic_camera_to_sharp.py \
+  --abc camera.abc \
+  --camera-path /cam \
+  --sample-index 0 \
+  --image-width 1920 \
+  --image-height 1080 \
+  --input-ply input.ply \
+  --output-ply aligned.ply \
+  --extrinsics-json camera_transforms.json
+```
+
+  - **Where to inject your camera data**:
+    - Preferred: provide `--extrinsics-json` with `world_from_camera` matrices keyed by frame index.
+    - Manual fallback: edit the `INJECT YOUR CAMERA TRANSFORMS HERE` block in `tools/convert_alembic_camera_to_sharp.py`.
+  - Note: `save_ply()` currently writes identity extrinsics metadata; alignment is encoded by transformed Gaussian coordinates.
+
 ### Rendering trajectories (CUDA GPU only)
 
 Additionally you can render videos with a camera trajectory. While the gaussians prediction works for all CPU, CUDA, and MPS, rendering videos via the `--render` option currently requires a CUDA GPU. The gsplat renderer takes a while to initialize at the first launch.
