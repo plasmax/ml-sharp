@@ -74,6 +74,27 @@ def _resolve_object_by_path(root, object_path: str):
     return current
 
 
+def _open_camera_by_full_path(root, camera_path: str, ICamera):
+    """Construct ICamera from full path using (parent, child_name) ctor."""
+    normalized = "/" + camera_path.strip("/")
+    parent_path, _, child_name = normalized.rpartition("/")
+    if not child_name:
+        raise ValueError(f"Invalid camera path: {camera_path}")
+
+    parent_obj = root if parent_path in {"", "/"} else _resolve_object_by_path(root, parent_path)
+    if parent_obj is None:
+        raise ValueError(f"Camera parent path not found: {parent_path}")
+
+    try:
+        return ICamera(parent_obj, child_name)
+    except RuntimeError as exc:
+        raise ValueError(
+            "Failed to open camera at path "
+            f"{normalized}. Ensure the path points to a camera schema object "
+            "(e.g. ...Shape), or run --list-cameras to choose a valid path."
+        ) from exc
+
+
 def _collect_camera_paths(root, ICamera, prefix: str = "") -> list[str]:
     """List camera object paths under `root`."""
     camera_paths: list[str] = []
@@ -105,15 +126,12 @@ def _open_camera_from_path(archive, camera_path: str, ICamera):
         )
 
     if ICamera.matches(obj.getHeader()):
-        return ICamera(obj, "")
+        return _open_camera_by_full_path(root, camera_path, ICamera)
 
     # Fallback: user may pass a parent transform path. Pick first camera below it.
     subtree_cameras = _collect_camera_paths(obj, ICamera, prefix=camera_path.rsplit("/", 1)[0])
     if len(subtree_cameras) == 1:
-        camera_obj = _resolve_object_by_path(root, subtree_cameras[0])
-        if camera_obj is None:
-            raise ValueError(f"Failed to resolve discovered camera path: {subtree_cameras[0]}")
-        return ICamera(camera_obj, "")
+        return _open_camera_by_full_path(root, subtree_cameras[0], ICamera)
     if len(subtree_cameras) > 1:
         candidates = "\n".join(f"  - {p}" for p in subtree_cameras)
         raise ValueError(
