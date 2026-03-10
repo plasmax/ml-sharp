@@ -72,15 +72,12 @@ python tools/convert_alembic_camera_to_sharp.py \
   --image-width 1920 \
   --image-height 1080 \
   --input-ply input.ply \
-  --output-ply aligned.ply \
-  --extrinsics-json camera_transforms.json
+  --output-ply aligned.ply
 ```
 
-
+  - By default, the script reads extrinsics from the Alembic xform chain above the selected camera object.
+  - Optional override: pass `--extrinsics-json` with `world_from_camera` matrices keyed by frame index.
   - Tip for nested Alembic rigs: run `python tools/convert_alembic_camera_to_sharp.py --abc camera.abc --list-cameras` and copy one full camera path into `--camera-path`.
-  - **Where to inject your camera data**:
-    - Preferred: provide `--extrinsics-json` with `world_from_camera` matrices keyed by frame index.
-    - Manual fallback: edit the `INJECT YOUR CAMERA TRANSFORMS HERE` block in `tools/convert_alembic_camera_to_sharp.py`.
   - Note: `save_ply()` currently writes identity extrinsics metadata; alignment is encoded by transformed Gaussian coordinates.
 
 ### Rendering trajectories (CUDA GPU only)
