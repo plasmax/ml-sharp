@@ -116,13 +116,31 @@ def _open_camera_from_path(archive, camera_path: str, ICamera):
 
 
 def _matrix44_to_numpy(matrix44) -> np.ndarray:
+    """Convert Alembic M44* to a numpy matrix with translation in last column.
+
+    Alembic/imath bindings may expose M44 indexing in a convention that appears
+    transposed relative to DCC world matrices (e.g. Nuke). We normalize to the
+    common 4x4 form used by this script:
+
+        [ R00 R01 R02 tx ]
+        [ R10 R11 R12 ty ]
+        [ R20 R21 R22 tz ]
+        [  0   0   0   1 ]
+    """
     try:
-        return np.array([[float(matrix44[i][j]) for j in range(4)] for i in range(4)], dtype=np.float64)
+        m = np.array([[float(matrix44[i][j]) for j in range(4)] for i in range(4)], dtype=np.float64)
     except Exception:
         flat = list(matrix44)
-        if len(flat) == 16:
-            return np.asarray(flat, dtype=np.float64).reshape(4, 4)
-        raise ValueError("Unable to convert Alembic 4x4 matrix to numpy array.")
+        if len(flat) != 16:
+            raise ValueError("Unable to convert Alembic 4x4 matrix to numpy array.")
+        m = np.asarray(flat, dtype=np.float64).reshape(4, 4)
+
+    # If translation shows up in the last row instead of the last column,
+    # transpose to match standard world-matrix layout.
+    if np.allclose(m[:3, 3], 0.0) and not np.allclose(m[3, :3], 0.0):
+        m = m.T
+
+    return m
 
 
 def world_from_camera_from_alembic(archive, camera_path: str, sample_index: int, IXform, ISampleSelector) -> np.ndarray:

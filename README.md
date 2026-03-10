@@ -76,6 +76,7 @@ python tools/convert_alembic_camera_to_sharp.py \
 ```
 
   - By default, the script reads extrinsics from the Alembic xform chain above the selected camera object.
+  - The tool auto-normalizes Alembic 4x4 matrix layout when translation is stored in the last row (as commonly seen via Python bindings), so translation is applied correctly during `.ply` alignment.
   - Optional override: pass `--extrinsics-json` with `world_from_camera` matrices keyed by frame index.
   - Tip for nested Alembic rigs: run `python tools/convert_alembic_camera_to_sharp.py --abc camera.abc --list-cameras` and copy one full camera path into `--camera-path`.
   - Note: `save_ply()` currently writes identity extrinsics metadata; alignment is encoded by transformed Gaussian coordinates.
