@@ -12,7 +12,7 @@ Coordinate convention used by SHARP/OpenCV in this repository:
 Example usage:
     python tools/convert_alembic_camera_to_sharp.py \
       --abc camera.abc \
-      --camera-path /cam \
+      --camera-path /Camera01/camera/.../render_:cameraLeft_LOCShape \
       --sample-index 0 \
       --input-ply input.ply \
       --output-ply aligned.ply \
@@ -41,7 +41,6 @@ import torch
 from sharp.utils.gaussians import apply_transform, load_ply, save_ply
 
 
-
 def _require_alembic_modules():
     try:
         from alembic.Abc import IArchive  # type: ignore
@@ -54,15 +53,88 @@ def _require_alembic_modules():
     return IArchive, ICamera
 
 
+def _get_child_by_name(parent, child_name: str):
+    """Return direct child object by name or None."""
+    for child_idx in range(parent.getNumChildren()):
+        child = parent.getChild(child_idx)
+        if child.getName() == child_name:
+            return child
+    return None
+
+
+def _resolve_object_by_path(root, object_path: str):
+    """Resolve an Alembic object from an absolute/relative path."""
+    current = root
+    path_parts = [part for part in object_path.strip("/").split("/") if part]
+    for part in path_parts:
+        next_obj = _get_child_by_name(current, part)
+        if next_obj is None:
+            return None
+        current = next_obj
+    return current
+
+
+def _collect_camera_paths(root, ICamera, prefix: str = "") -> list[str]:
+    """List camera object paths under `root`."""
+    camera_paths: list[str] = []
+
+    def _dfs(obj, current_prefix: str) -> None:
+        path = f"{current_prefix}/{obj.getName()}" if current_prefix else f"/{obj.getName()}"
+        if ICamera.matches(obj.getHeader()):
+            camera_paths.append(path)
+        for child_idx in range(obj.getNumChildren()):
+            _dfs(obj.getChild(child_idx), path)
+
+    _dfs(root, prefix)
+    return camera_paths
+
+
+def _open_camera_from_path(archive, camera_path: str, ICamera):
+    """Open ICamera robustly from a full object path."""
+    root = archive.getTop()
+    obj = _resolve_object_by_path(root, camera_path)
+    if obj is None:
+        available: list[str] = []
+        for child_idx in range(root.getNumChildren()):
+            available.extend(_collect_camera_paths(root.getChild(child_idx), ICamera))
+        sample = "\n".join(f"  - {p}" for p in available[:20])
+        raise ValueError(
+            f"Camera path not found: {camera_path}\n"
+            "Use --list-cameras to inspect available camera objects.\n"
+            f"First available camera paths:\n{sample}"
+        )
+
+    if ICamera.matches(obj.getHeader()):
+        return ICamera(obj, "")
+
+    # Fallback: user may pass a parent transform path. Pick first camera below it.
+    subtree_cameras = _collect_camera_paths(obj, ICamera, prefix=camera_path.rsplit("/", 1)[0])
+    if len(subtree_cameras) == 1:
+        camera_obj = _resolve_object_by_path(root, subtree_cameras[0])
+        if camera_obj is None:
+            raise ValueError(f"Failed to resolve discovered camera path: {subtree_cameras[0]}")
+        return ICamera(camera_obj, "")
+    if len(subtree_cameras) > 1:
+        candidates = "\n".join(f"  - {p}" for p in subtree_cameras)
+        raise ValueError(
+            f"Path exists but is not a camera object: {camera_path}\n"
+            "Multiple camera objects found under that subtree; pass one exact camera path:\n"
+            f"{candidates}"
+        )
+
+    raise ValueError(
+        f"Path exists but is not a camera object and has no camera descendants: {camera_path}"
+    )
+
+
 def read_camera_sample(abc_path: Path, camera_path: str, sample_index: int):
     """Read Alembic CameraSample and return basic camera parameters."""
     IArchive, ICamera = _require_alembic_modules()
 
     archive = IArchive(str(abc_path))
-    camera_name = camera_path.strip("/")
-    camera_obj = ICamera(archive.getTop(), camera_name)
+    camera_obj = _open_camera_from_path(archive, camera_path, ICamera)
     if not camera_obj.valid():
-        raise ValueError(f"Invalid camera path in archive: {camera_path}")
+        raise ValueError(f"Invalid camera object in archive: {camera_path}")
 
     schema = camera_obj.getSchema()
     num_samples = schema.getNumSamples()
@@ -181,14 +253,23 @@ def main() -> None:
     parser.add_argument(
         "--camera-path",
         type=str,
-        required=True,
-        help="Alembic camera object path relative to archive top, e.g. /cam",
+        required=False,
+        default=None,
+        help=(
+            "Full camera object path, e.g. "
+            "/Camera01/camera/.../render_:cameraLeft_LOCShape"
+        ),
+    )
+    parser.add_argument(
+        "--list-cameras",
+        action="store_true",
+        help="List camera object paths inside the Alembic archive and exit.",
     )
     parser.add_argument("--sample-index", type=int, default=0)
-    parser.add_argument("--image-width", type=int, required=True)
-    parser.add_argument("--image-height", type=int, required=True)
-    parser.add_argument("--input-ply", type=Path, required=True)
-    parser.add_argument("--output-ply", type=Path, required=True)
+    parser.add_argument("--image-width", type=int, required=False)
+    parser.add_argument("--image-height", type=int, required=False)
+    parser.add_argument("--input-ply", type=Path, required=False)
+    parser.add_argument("--output-ply", type=Path, required=False)
     parser.add_argument(
         "--extrinsics-json",
         type=Path,
@@ -197,6 +278,34 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    IArchive, ICamera = _require_alembic_modules()
+    archive = IArchive(str(args.abc))
+
+    if args.list_cameras:
+        camera_paths: list[str] = []
+        root = archive.getTop()
+        for child_idx in range(root.getNumChildren()):
+            camera_paths.extend(_collect_camera_paths(root.getChild(child_idx), ICamera))
+        if not camera_paths:
+            print("No camera objects were found in this archive.")
+        else:
+            print("Camera objects:")
+            for path in camera_paths:
+                print(path)
+        return
+
+    required_when_converting = [
+        ("--camera-path", args.camera_path),
+        ("--image-width", args.image_width),
+        ("--image-height", args.image_height),
+        ("--input-ply", args.input_ply),
+        ("--output-ply", args.output_ply),
+    ]
+    missing = [name for name, value in required_when_converting if value is None]
+    if missing:
+        raise ValueError(
+            "Missing required argument(s) for conversion: " + ", ".join(missing)
+        )
 
     sample, num_samples = read_camera_sample(args.abc, args.camera_path, args.sample_index)
     k = camera_sample_to_intrinsics_px(sample, args.image_width, args.image_height)

@@ -67,7 +67,7 @@ The results will be 3D gaussian splats (3DGS) in the output folder. The 3DGS `.p
 ```bash
 python tools/convert_alembic_camera_to_sharp.py \
   --abc camera.abc \
-  --camera-path /cam \
+  --camera-path /Camera01/camera/.../render_:cameraLeft_LOCShape \
   --sample-index 0 \
   --image-width 1920 \
   --image-height 1080 \
@@ -76,6 +76,8 @@ python tools/convert_alembic_camera_to_sharp.py \
   --extrinsics-json camera_transforms.json
 ```
 
+
+  - Tip for nested Alembic rigs: run `python tools/convert_alembic_camera_to_sharp.py --abc camera.abc --list-cameras` and copy one full camera path into `--camera-path`.
   - **Where to inject your camera data**:
     - Preferred: provide `--extrinsics-json` with `world_from_camera` matrices keyed by frame index.
     - Manual fallback: edit the `INJECT YOUR CAMERA TRANSFORMS HERE` block in `tools/convert_alembic_camera_to_sharp.py`.
