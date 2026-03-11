@@ -398,7 +398,7 @@ def main() -> None:
     parser.add_argument(
         "--world-scale",
         type=float,
-        default=1.0,
+        default=10.0,
         help="Optional world scale factor applied after alignment (e.g. 10.0 for cm<->mm style mismatches).",
     )
     parser.add_argument(
