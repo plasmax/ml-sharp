@@ -145,6 +145,65 @@ def _matrix44_to_numpy(matrix44) -> np.ndarray:
     return m
 
 
+def _matrix33_to_numpy(matrix33) -> np.ndarray:
+    """Convert Alembic M33* to numpy with affine layout normalization."""
+    try:
+        m = np.array([[float(matrix33[i][j]) for j in range(3)] for i in range(3)], dtype=np.float64)
+    except Exception:
+        flat = list(matrix33)
+        if len(flat) != 9:
+            raise ValueError("Unable to convert Alembic 3x3 matrix to numpy array.")
+        m = np.asarray(flat, dtype=np.float64).reshape(3, 3)
+
+    # Normalize layout if translation looks row-major encoded.
+    if np.allclose(m[:2, 2], 0.0) and not np.allclose(m[2, :2], 0.0):
+        m = m.T
+    return m
+
+
+def _apply_filmback_matrix(
+    sample,
+    h_aperture_mm: float,
+    v_aperture_mm: float,
+    h_offset_mm: float,
+    v_offset_mm: float,
+    apply_filmback_translation: bool,
+) -> tuple[float, float, float, float]:
+    """Apply Alembic filmback matrix to aperture/offset parameters."""
+    if not hasattr(sample, "getFilmBackMatrix"):
+        return h_aperture_mm, v_aperture_mm, h_offset_mm, v_offset_mm
+
+    filmback = _matrix33_to_numpy(sample.getFilmBackMatrix())
+
+    # Model the film gate as center+size in mm and transform its 4 corners.
+    half_w = 0.5 * h_aperture_mm
+    half_h = 0.5 * v_aperture_mm
+    corners = np.array(
+        [
+            [h_offset_mm - half_w, v_offset_mm - half_h, 1.0],
+            [h_offset_mm + half_w, v_offset_mm - half_h, 1.0],
+            [h_offset_mm - half_w, v_offset_mm + half_h, 1.0],
+            [h_offset_mm + half_w, v_offset_mm + half_h, 1.0],
+        ],
+        dtype=np.float64,
+    )
+
+    transformed = (filmback @ corners.T).T
+    x_min, y_min = transformed[:, 0].min(), transformed[:, 1].min()
+    x_max, y_max = transformed[:, 0].max(), transformed[:, 1].max()
+
+    h_aperture_new = x_max - x_min
+    v_aperture_new = y_max - y_min
+    h_offset_new = 0.5 * (x_min + x_max)
+    v_offset_new = 0.5 * (y_min + y_max)
+
+    if not apply_filmback_translation:
+        h_offset_new = 0.0
+        v_offset_new = 0.0
+
+    return h_aperture_new, v_aperture_new, h_offset_new, v_offset_new
+
+
 def world_from_camera_from_alembic(archive, camera_path: str, sample_index: int, IXform, ISampleSelector) -> np.ndarray:
     """Compute world_from_camera by composing IXform matrices along the camera path."""
     root = archive.getTop()
@@ -195,6 +254,7 @@ def camera_sample_to_intrinsics_px(
     image_height: int,
     override_focal_mm: float | None = None,
     ignore_film_offset: bool = False,
+    apply_filmback_translation: bool = False,
 ) -> np.ndarray:
     focal_mm = float(sample.getFocalLength()) if override_focal_mm is None else float(override_focal_mm)
     h_aperture_cm = float(sample.getHorizontalAperture())
@@ -210,6 +270,15 @@ def camera_sample_to_intrinsics_px(
     v_aperture_mm = v_aperture_cm * 10.0
     h_offset_mm = 0.0 if ignore_film_offset else (h_offset_cm * 10.0)
     v_offset_mm = 0.0 if ignore_film_offset else (v_offset_cm * 10.0)
+
+    h_aperture_mm, v_aperture_mm, h_offset_mm, v_offset_mm = _apply_filmback_matrix(
+        sample,
+        h_aperture_mm,
+        v_aperture_mm,
+        h_offset_mm,
+        v_offset_mm,
+        apply_filmback_translation=apply_filmback_translation and (not ignore_film_offset),
+    )
 
     # Alembic lens squeeze scales horizontal aperture (anamorphic behaviour).
     # Use effective aperture in camera space: h_aperture / lens_squeeze.
@@ -259,10 +328,37 @@ def convert_world_from_camera_frame(world_from_camera: np.ndarray, flip_camera_y
     return world_from_camera @ camera_basis_fix
 
 
-def align_ply_to_camera_world(input_ply: Path, output_ply: Path, world_from_camera: np.ndarray):
+def _scale_transform(world_scale: float, anchor_xyz: np.ndarray) -> torch.Tensor:
+    linear = np.eye(3, dtype=np.float32) * float(world_scale)
+    offset = ((1.0 - float(world_scale)) * anchor_xyz).astype(np.float32)
+    m = np.concatenate([linear, offset[:, None]], axis=1)
+    return torch.from_numpy(m)
+
+
+def _camera_anchor_from_world_from_camera(world_from_camera: np.ndarray) -> np.ndarray:
+    return np.asarray(world_from_camera[:3, 3], dtype=np.float32)
+
+
+def align_ply_to_camera_world(
+    input_ply: Path,
+    output_ply: Path,
+    world_from_camera: np.ndarray,
+    world_scale: float,
+    scale_anchor: str,
+):
     gaussians, metadata = load_ply(input_ply)
     transform = torch.from_numpy(world_from_camera[:3]).to(dtype=torch.float32)
     aligned = apply_transform(gaussians, transform)
+
+    if world_scale != 1.0:
+        if scale_anchor == "camera":
+            anchor_xyz = _camera_anchor_from_world_from_camera(world_from_camera)
+        elif scale_anchor == "origin":
+            anchor_xyz = np.zeros(3, dtype=np.float32)
+        else:
+            raise ValueError(f"Invalid scale_anchor={scale_anchor}")
+        aligned = apply_transform(aligned, _scale_transform(world_scale, anchor_xyz))
+
     save_ply(aligned, metadata.focal_length_px, metadata.resolution_px[::-1], output_ply)
 
 
@@ -293,6 +389,23 @@ def main() -> None:
         "--no-camera-yz-flip",
         action="store_true",
         help="Disable conversion from DCC camera basis to OpenCV basis via camera Y/Z sign flip.",
+    )
+    parser.add_argument(
+        "--apply-filmback-translation",
+        action="store_true",
+        help="Apply filmBack translation channels to principal point (default keeps offsets centered).",
+    )
+    parser.add_argument(
+        "--world-scale",
+        type=float,
+        default=1.0,
+        help="Optional world scale factor applied after alignment (e.g. 10.0 for cm<->mm style mismatches).",
+    )
+    parser.add_argument(
+        "--scale-anchor",
+        choices=["camera", "origin"],
+        default="camera",
+        help="Anchor used when applying --world-scale.",
     )
     parser.add_argument("--image-width", type=int, required=False)
     parser.add_argument("--image-height", type=int, required=False)
@@ -342,6 +455,7 @@ def main() -> None:
         args.image_height,
         override_focal_mm=args.override_focal_length_mm,
         ignore_film_offset=args.ignore_film_offset,
+        apply_filmback_translation=args.apply_filmback_translation,
     )
     world_from_camera, extrinsics_source = load_world_from_camera(
         archive,
@@ -357,7 +471,13 @@ def main() -> None:
         flip_camera_yz=(not args.no_camera_yz_flip),
     )
 
-    align_ply_to_camera_world(args.input_ply, args.output_ply, world_from_camera)
+    align_ply_to_camera_world(
+        args.input_ply,
+        args.output_ply,
+        world_from_camera,
+        world_scale=args.world_scale,
+        scale_anchor=args.scale_anchor,
+    )
 
     print("Converted camera sample:")
     print(f"- Alembic camera samples available: {num_samples}")
@@ -366,7 +486,10 @@ def main() -> None:
     print(f"- Extrinsics source: {extrinsics_source}")
     print(f"- Camera Y/Z flip applied: {not args.no_camera_yz_flip}")
     print(f"- Film offset ignored: {args.ignore_film_offset}")
+    print(f"- Filmback translation applied: {args.apply_filmback_translation}")
     print(f"- Focal override mm: {args.override_focal_length_mm}")
+    print(f"- World scale: {args.world_scale}")
+    print(f"- Scale anchor: {args.scale_anchor}")
     print("- Camera sample parameters:")
     print(f"  focal_length_mm={float(sample.getFocalLength())}")
     print(f"  lens_squeeze_ratio={float(sample.getLensSqueezeRatio())}")

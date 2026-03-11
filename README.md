@@ -78,10 +78,12 @@ python tools/convert_alembic_camera_to_sharp.py \
   - By default, the script reads extrinsics from the Alembic xform chain above the selected camera object.
   - By default, it applies a camera-basis conversion (`Y`/`Z` sign flip) to map common DCC camera axes to SHARP/OpenCV. Disable with `--no-camera-yz-flip` if your source is already OpenCV-style.
   - The tool auto-normalizes Alembic 4x4 matrix layout when translation is stored in the last row (as commonly seen via Python bindings), so translation is applied correctly during `.ply` alignment.
+  - By default, filmBack translation channels are not applied to principal point (this matches many Nuke exports where window translate is a comp-space adjustment). Use `--apply-filmback-translation` if you want those offsets baked into `K`.
   - If your DCC camera has window translate / film offsets you do not want in projection matching, pass `--ignore-film-offset`.
   - Intrinsics now apply Alembic `lens_squeeze_ratio` as horizontal aperture scaling (anamorphic), which fixes common focal mismatch issues when converting to OpenCV `fx`.
   - If you need to match a calibrated focal directly, pass `--override-focal-length-mm <value>`.
   - Optional override: pass `--extrinsics-json` with `world_from_camera` matrices keyed by frame index.
+  - Use `--world-scale` to uniformly scale the aligned `.ply` around an anchor (`--scale-anchor camera|origin`). Example: `--world-scale 10 --scale-anchor camera`.
   - Tip for nested Alembic rigs: run `python tools/convert_alembic_camera_to_sharp.py --abc camera.abc --list-cameras` and copy one full camera path into `--camera-path`.
   - Note: `save_ply()` currently writes identity extrinsics metadata; alignment is encoded by transformed Gaussian coordinates.
 
