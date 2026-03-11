@@ -187,8 +187,14 @@ def read_camera_sample(archive, camera_path: str, sample_index: int, ICamera, IS
     return sample, num_samples, resolved_path
 
 
-def camera_sample_to_intrinsics_px(sample, image_width: int, image_height: int) -> np.ndarray:
-    focal_mm = float(sample.getFocalLength())
+def camera_sample_to_intrinsics_px(
+    sample,
+    image_width: int,
+    image_height: int,
+    override_focal_mm: float | None = None,
+    ignore_film_offset: bool = False,
+) -> np.ndarray:
+    focal_mm = float(sample.getFocalLength()) if override_focal_mm is None else float(override_focal_mm)
     h_aperture_cm = float(sample.getHorizontalAperture())
     v_aperture_cm = float(sample.getVerticalAperture())
     h_offset_cm = float(sample.getHorizontalFilmOffset())
@@ -200,8 +206,8 @@ def camera_sample_to_intrinsics_px(sample, image_width: int, image_height: int) 
 
     h_aperture_mm = h_aperture_cm * 10.0
     v_aperture_mm = v_aperture_cm * 10.0
-    h_offset_mm = h_offset_cm * 10.0
-    v_offset_mm = v_offset_cm * 10.0
+    h_offset_mm = 0.0 if ignore_film_offset else (h_offset_cm * 10.0)
+    v_offset_mm = 0.0 if ignore_film_offset else (v_offset_cm * 10.0)
 
     fx = (focal_mm / lens_squeeze) * (image_width / h_aperture_mm)
     fy = focal_mm * (image_height / v_aperture_mm)
@@ -238,6 +244,14 @@ def load_world_from_camera(
     return matrix, "alembic_xform_chain"
 
 
+def convert_world_from_camera_frame(world_from_camera: np.ndarray, flip_camera_yz: bool) -> np.ndarray:
+    """Convert camera basis to SHARP/OpenCV camera basis if requested."""
+    if not flip_camera_yz:
+        return world_from_camera
+    camera_basis_fix = np.diag([1.0, -1.0, -1.0, 1.0]).astype(np.float64)
+    return world_from_camera @ camera_basis_fix
+
+
 def align_ply_to_camera_world(input_ply: Path, output_ply: Path, world_from_camera: np.ndarray):
     gaussians, metadata = load_ply(input_ply)
     transform = torch.from_numpy(world_from_camera[:3]).to(dtype=torch.float32)
@@ -257,6 +271,22 @@ def main() -> None:
     )
     parser.add_argument("--list-cameras", action="store_true", help="List camera object paths and exit.")
     parser.add_argument("--sample-index", type=int, default=0)
+    parser.add_argument(
+        "--override-focal-length-mm",
+        type=float,
+        default=None,
+        help="Optional focal length override in mm (uses Alembic focal when omitted).",
+    )
+    parser.add_argument(
+        "--ignore-film-offset",
+        action="store_true",
+        help="Ignore Alembic horizontal/vertical film offsets (window translate).",
+    )
+    parser.add_argument(
+        "--no-camera-yz-flip",
+        action="store_true",
+        help="Disable conversion from DCC camera basis to OpenCV basis via camera Y/Z sign flip.",
+    )
     parser.add_argument("--image-width", type=int, required=False)
     parser.add_argument("--image-height", type=int, required=False)
     parser.add_argument("--input-ply", type=Path, required=False)
@@ -299,7 +329,13 @@ def main() -> None:
     sample, num_samples, resolved_camera_path = read_camera_sample(
         archive, args.camera_path, args.sample_index, ICamera=ICamera, ISampleSelector=ISampleSelector
     )
-    k = camera_sample_to_intrinsics_px(sample, args.image_width, args.image_height)
+    k = camera_sample_to_intrinsics_px(
+        sample,
+        args.image_width,
+        args.image_height,
+        override_focal_mm=args.override_focal_length_mm,
+        ignore_film_offset=args.ignore_film_offset,
+    )
     world_from_camera, extrinsics_source = load_world_from_camera(
         archive,
         resolved_camera_path,
@@ -309,6 +345,11 @@ def main() -> None:
         ISampleSelector=ISampleSelector,
     )
 
+    world_from_camera = convert_world_from_camera_frame(
+        world_from_camera,
+        flip_camera_yz=(not args.no_camera_yz_flip),
+    )
+
     align_ply_to_camera_world(args.input_ply, args.output_ply, world_from_camera)
 
     print("Converted camera sample:")
@@ -316,6 +357,9 @@ def main() -> None:
     print(f"- Selected sample index: {args.sample_index}")
     print(f"- Resolved camera path: {resolved_camera_path}")
     print(f"- Extrinsics source: {extrinsics_source}")
+    print(f"- Camera Y/Z flip applied: {not args.no_camera_yz_flip}")
+    print(f"- Film offset ignored: {args.ignore_film_offset}")
+    print(f"- Focal override mm: {args.override_focal_length_mm}")
     print("- Intrinsics K (pixels):")
     print(np.array2string(k, precision=6, suppress_small=False))
     print("- world_from_camera (4x4):")
