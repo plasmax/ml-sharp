@@ -2,7 +2,9 @@
 """Convert Alembic camera data to SHARP intrinsics/extrinsics and align a Gaussian .ply.
 
 By default, this tool derives `world_from_camera` from the Alembic xform chain
-above the selected camera object. You can override this with --extrinsics-json.
+above the selected camera object and converts intrinsics from camera sample parameters
+(including lens squeeze applied as horizontal aperture scaling).
+You can override extrinsics with --extrinsics-json.
 """
 
 from __future__ import annotations
@@ -209,9 +211,14 @@ def camera_sample_to_intrinsics_px(
     h_offset_mm = 0.0 if ignore_film_offset else (h_offset_cm * 10.0)
     v_offset_mm = 0.0 if ignore_film_offset else (v_offset_cm * 10.0)
 
-    fx = (focal_mm / lens_squeeze) * (image_width / h_aperture_mm)
+    # Alembic lens squeeze scales horizontal aperture (anamorphic behaviour).
+    # Use effective aperture in camera space: h_aperture / lens_squeeze.
+    h_aperture_effective_mm = h_aperture_mm / lens_squeeze
+    h_offset_effective_mm = h_offset_mm / lens_squeeze
+
+    fx = focal_mm * (image_width / h_aperture_effective_mm)
     fy = focal_mm * (image_height / v_aperture_mm)
-    cx = image_width * 0.5 + (h_offset_mm / h_aperture_mm) * image_width
+    cx = image_width * 0.5 + (h_offset_effective_mm / h_aperture_effective_mm) * image_width
     cy = image_height * 0.5 + (v_offset_mm / v_aperture_mm) * image_height
 
     return np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
@@ -360,6 +367,13 @@ def main() -> None:
     print(f"- Camera Y/Z flip applied: {not args.no_camera_yz_flip}")
     print(f"- Film offset ignored: {args.ignore_film_offset}")
     print(f"- Focal override mm: {args.override_focal_length_mm}")
+    print("- Camera sample parameters:")
+    print(f"  focal_length_mm={float(sample.getFocalLength())}")
+    print(f"  lens_squeeze_ratio={float(sample.getLensSqueezeRatio())}")
+    print(f"  horizontal_aperture_cm={float(sample.getHorizontalAperture())}")
+    print(f"  vertical_aperture_cm={float(sample.getVerticalAperture())}")
+    print(f"  horizontal_film_offset_cm={float(sample.getHorizontalFilmOffset())}")
+    print(f"  vertical_film_offset_cm={float(sample.getVerticalFilmOffset())}")
     print("- Intrinsics K (pixels):")
     print(np.array2string(k, precision=6, suppress_small=False))
     print("- world_from_camera (4x4):")

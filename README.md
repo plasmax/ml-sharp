@@ -79,6 +79,7 @@ python tools/convert_alembic_camera_to_sharp.py \
   - By default, it applies a camera-basis conversion (`Y`/`Z` sign flip) to map common DCC camera axes to SHARP/OpenCV. Disable with `--no-camera-yz-flip` if your source is already OpenCV-style.
   - The tool auto-normalizes Alembic 4x4 matrix layout when translation is stored in the last row (as commonly seen via Python bindings), so translation is applied correctly during `.ply` alignment.
   - If your DCC camera has window translate / film offsets you do not want in projection matching, pass `--ignore-film-offset`.
+  - Intrinsics now apply Alembic `lens_squeeze_ratio` as horizontal aperture scaling (anamorphic), which fixes common focal mismatch issues when converting to OpenCV `fx`.
   - If you need to match a calibrated focal directly, pass `--override-focal-length-mm <value>`.
   - Optional override: pass `--extrinsics-json` with `world_from_camera` matrices keyed by frame index.
   - Tip for nested Alembic rigs: run `python tools/convert_alembic_camera_to_sharp.py --abc camera.abc --list-cameras` and copy one full camera path into `--camera-path`.
