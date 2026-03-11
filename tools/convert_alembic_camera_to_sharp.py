@@ -339,14 +339,55 @@ def _camera_anchor_from_world_from_camera(world_from_camera: np.ndarray) -> np.n
     return np.asarray(world_from_camera[:3, 3], dtype=np.float32)
 
 
+def _intrinsics_remap_transform(
+    source_focal_px: float,
+    source_resolution_px: tuple[int, int],
+    target_k: np.ndarray,
+) -> torch.Tensor:
+    """Build linear transform converting camera-space geometry between intrinsics.
+
+    Preserves per-pixel correspondence while switching from source intrinsics to
+    target intrinsics in the same camera coordinate frame.
+    """
+    src_w, src_h = source_resolution_px
+    fx_src = float(source_focal_px)
+    fy_src = float(source_focal_px)
+    cx_src = src_w * 0.5
+    cy_src = src_h * 0.5
+
+    fx_tgt = float(target_k[0, 0])
+    fy_tgt = float(target_k[1, 1])
+    cx_tgt = float(target_k[0, 2])
+    cy_tgt = float(target_k[1, 2])
+
+    transform = np.array(
+        [
+            [fx_src / fx_tgt, 0.0, (cx_src - cx_tgt) / fx_tgt, 0.0],
+            [0.0, fy_src / fy_tgt, (cy_src - cy_tgt) / fy_tgt, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    return torch.from_numpy(transform)
+
+
 def align_ply_to_camera_world(
     input_ply: Path,
     output_ply: Path,
     world_from_camera: np.ndarray,
+    target_k: np.ndarray,
+    apply_intrinsics_remap: bool,
     world_scale: float,
     scale_anchor: str,
 ):
     gaussians, metadata = load_ply(input_ply)
+
+    if apply_intrinsics_remap:
+        gaussians = apply_transform(
+            gaussians,
+            _intrinsics_remap_transform(metadata.focal_length_px, metadata.resolution_px, target_k),
+        )
+
     transform = torch.from_numpy(world_from_camera[:3]).to(dtype=torch.float32)
     aligned = apply_transform(gaussians, transform)
 
@@ -389,6 +430,11 @@ def main() -> None:
         "--no-camera-yz-flip",
         action="store_true",
         help="Disable conversion from DCC camera basis to OpenCV basis via camera Y/Z sign flip.",
+    )
+    parser.add_argument(
+        "--no-intrinsics-remap",
+        action="store_true",
+        help="Disable camera-space intrinsics remap from input PLY metadata intrinsics to target Alembic intrinsics.",
     )
     parser.add_argument(
         "--apply-filmback-translation",
@@ -475,6 +521,8 @@ def main() -> None:
         args.input_ply,
         args.output_ply,
         world_from_camera,
+        target_k=k,
+        apply_intrinsics_remap=(not args.no_intrinsics_remap),
         world_scale=args.world_scale,
         scale_anchor=args.scale_anchor,
     )
@@ -485,6 +533,7 @@ def main() -> None:
     print(f"- Resolved camera path: {resolved_camera_path}")
     print(f"- Extrinsics source: {extrinsics_source}")
     print(f"- Camera Y/Z flip applied: {not args.no_camera_yz_flip}")
+    print(f"- Intrinsics remap applied: {not args.no_intrinsics_remap}")
     print(f"- Film offset ignored: {args.ignore_film_offset}")
     print(f"- Filmback translation applied: {args.apply_filmback_translation}")
     print(f"- Focal override mm: {args.override_focal_length_mm}")
