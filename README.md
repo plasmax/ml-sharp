@@ -55,6 +55,41 @@ sharp predict -i /path/to/input/images -o /path/to/output/gaussians -c sharp_257
 
 The results will be 3D gaussian splats (3DGS) in the output folder. The 3DGS `.ply` files are compatible to various public 3DGS renderers. We follow the OpenCV coordinate convention (x right, y down, z forward). The 3DGS scene center is roughly at (0, 0, +z). When dealing with 3rdparty renderers, please scale and rotate to re-center the scene accordingly.
 
+### FAQ: camera alignment and external camera tracks
+
+- **Can I convert Alembic camera data to extrinsics/intrinsics and export a `.ply` aligned to that camera?**
+  - Yes. Use `tools/convert_alembic_camera_to_sharp.py` to:
+    1. read an Alembic camera sample,
+    2. convert camera parameters to OpenCV/SHARP intrinsics (x right, y down, z forward), and
+    3. transform Gaussian means/orientations into your target world frame before writing a new `.ply`.
+  - Example:
+
+```bash
+python tools/convert_alembic_camera_to_sharp.py \
+  --abc camera.abc \
+  --camera-path /Camera01/camera/.../render_:cameraLeft_LOCShape \
+  --sample-index 0 \
+  --image-width 1920 \
+  --image-height 1080 \
+  --input-ply input.ply \
+  --output-ply aligned.ply
+```
+
+  - By default, the script reads extrinsics from the Alembic xform chain above the selected camera object.
+  - By default, it applies a camera-basis conversion (`Y`/`Z` sign flip) to map common DCC camera axes to SHARP/OpenCV. Disable with `--no-camera-yz-flip` if your source is already OpenCV-style.
+  - The tool auto-normalizes Alembic 4x4 matrix layout when translation is stored in the last row (as commonly seen via Python bindings), so translation is applied correctly during `.ply` alignment.
+  - By default, filmBack translation channels are not applied to principal point (this matches many Nuke exports where window translate is a comp-space adjustment). Use `--apply-filmback-translation` if you want those offsets baked into `K`.
+  - By default, film/window offsets are ignored to match common Nuke camera exports; pass `--use-film-offset` to include them (or `--ignore-film-offset` explicitly).
+  - The converter now remaps input PLY camera-space geometry from the PLY metadata intrinsics to the Alembic target intrinsics before world transform. Disable with `--no-intrinsics-remap` for legacy behavior.
+  - Intrinsics now apply Alembic `lens_squeeze_ratio` as horizontal aperture scaling (anamorphic), which fixes common focal mismatch issues when converting to OpenCV `fx`.
+  - If you need to match a calibrated focal directly, pass `--override-focal-length-mm <value>`.
+  - Optional override: pass `--extrinsics-json` with `world_from_camera` matrices keyed by frame index.
+  - Use `--world-scale` to uniformly scale the aligned `.ply` around an anchor (`--scale-anchor camera|origin`). Example: `--world-scale 10 --scale-anchor camera`.
+  - For animated cameras and frame sequences, use `--start-frame`, `--end-frame`, and `--fps` (default 24). In sequence mode, frame placeholders support `{frame}` / `{frame:04d}`, `%04d`, and hash patterns like `####` / `#`.
+  - For deep debugging of focal/window-translate mismatches, run `tools/inspect_alembic_camera.py` (or `tools/inspect_cam.py`) to print raw camera parameters, filmback matrix, and candidate `K` variants.
+  - Tip for nested Alembic rigs: run `python tools/convert_alembic_camera_to_sharp.py --abc camera.abc --list-cameras` and copy one full camera path into `--camera-path`.
+  - Note: `save_ply()` currently writes identity extrinsics metadata; alignment is encoded by transformed Gaussian coordinates.
+
 ### Rendering trajectories (CUDA GPU only)
 
 Additionally you can render videos with a camera trajectory. While the gaussians prediction works for all CPU, CUDA, and MPS, rendering videos via the `--render` option currently requires a CUDA GPU. The gsplat renderer takes a while to initialize at the first launch.
