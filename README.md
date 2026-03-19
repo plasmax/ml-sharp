@@ -85,7 +85,7 @@ python tools/convert_alembic_camera_to_sharp.py \
   - If you need to match a calibrated focal directly, pass `--override-focal-length-mm <value>`.
   - Optional override: pass `--extrinsics-json` with `world_from_camera` matrices keyed by frame index.
   - Use `--world-scale` to uniformly scale the aligned `.ply` around an anchor (`--scale-anchor camera|origin`). Example: `--world-scale 10 --scale-anchor camera`.
-  - For animated cameras and frame sequences, use `--start-frame`, `--end-frame`, and `--fps` (default 24). In sequence mode, pass `--input-ply` / `--output-ply` templates containing `{frame}`.
+  - For animated cameras and frame sequences, use `--start-frame`, `--end-frame`, and `--fps` (default 24). In sequence mode, frame placeholders support `{frame}` / `{frame:04d}`, `%04d`, and hash patterns like `####` / `#`.
   - For deep debugging of focal/window-translate mismatches, run `tools/inspect_alembic_camera.py` (or `tools/inspect_cam.py`) to print raw camera parameters, filmback matrix, and candidate `K` variants.
   - Tip for nested Alembic rigs: run `python tools/convert_alembic_camera_to_sharp.py --abc camera.abc --list-cameras` and copy one full camera path into `--camera-path`.
   - Note: `save_ply()` currently writes identity extrinsics metadata; alignment is encoded by transformed Gaussian coordinates.

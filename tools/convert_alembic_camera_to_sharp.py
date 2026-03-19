@@ -328,10 +328,43 @@ def align_ply_to_camera_world(
 
 def _path_for_frame(path_template: Path, frame: int, require_placeholder: bool) -> Path:
     text = str(path_template)
-    has_placeholder = "{frame" in text
-    if require_placeholder and not has_placeholder:
-        raise ValueError(f"Expected '{{frame}}' placeholder in path template: {path_template}")
-    return Path(text.format(frame=frame)) if has_placeholder else path_template
+
+    # Supported sequence placeholders:
+    # 1) Python format: {frame} / {frame:04d}
+    # 2) printf style: %04d (or any %0Nd)
+    # 3) hashes: ####, #
+    has_python = "{frame" in text
+    has_printf = "%0" in text and "d" in text
+    has_hash = "#" in text
+
+    if require_placeholder and not (has_python or has_printf or has_hash):
+        raise ValueError(
+            "Expected frame placeholder in path template (one of {frame}, %04d, ####): "
+            f"{path_template}"
+        )
+
+    if has_python:
+        return Path(text.format(frame=frame))
+
+    if has_printf:
+        try:
+            return Path(text % frame)
+        except TypeError as exc:
+            raise ValueError(f"Invalid printf-style frame template: {path_template}") from exc
+
+    if has_hash:
+        # Replace the longest contiguous hash run with zero-padded frame number.
+        import re
+
+        matches = list(re.finditer(r"#+", text))
+        if not matches:
+            return Path(text)
+        longest = max(matches, key=lambda m: len(m.group(0)))
+        width = len(longest.group(0))
+        padded = f"{frame:0{width}d}"
+        return Path(text[: longest.start()] + padded + text[longest.end() :])
+
+    return Path(text)
 
 
 def _process_single(args, archive, ICamera, IXform, ISampleSelector):
